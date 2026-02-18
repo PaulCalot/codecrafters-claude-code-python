@@ -16,7 +16,6 @@ class ResponseHandler:
     def handle(cls, response: ChatCompletion):
         first_msg = response.choices[0].message
         if (first_msg.tool_calls is not None) and (len(first_msg.tool_calls) > 0):
-            print("Tool called")
             first_tool = first_msg.tool_calls.pop(0)
             name = first_tool.function.name
             args = json.loads(first_tool.function.arguments)
@@ -24,7 +23,6 @@ class ResponseHandler:
             print(tool_res)
         else:
             # msg by defualt
-            print("Message")
             print(first_msg.content)
 
     @classmethod
