@@ -4,7 +4,7 @@ import logging
 import os
 import sys
 from enum import Enum
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from openai import OpenAI
 from openai.types.chat import (
@@ -51,7 +51,28 @@ class ToolHandler:
                         "required": ["file_path"],
                     },
                 },
-            }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "Write",
+                    "description": "Write content to a file",
+                    "parameters": {
+                        "type": "object",
+                        "required": ["file_path", "content"],
+                        "properties": {
+                            "file_path": {
+                                "type": "string",
+                                "description": "The path of the file to write to",
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "The content to write to the file",
+                            },
+                        },
+                    },
+                },
+            },
         ]
 
     @classmethod
@@ -64,6 +85,8 @@ class ToolHandler:
     def tools_switcher(cls, name: str) -> Callable:
         if name == "Read":
             return cls.read_tool
+        if name == "Write":
+            return cls.write_tool
         else:
             raise RuntimeError(f"Could not find tool {name}")
 
@@ -72,6 +95,12 @@ class ToolHandler:
         with open(file_path, "r") as f:
             lines = f.readlines()
         return "\n".join(lines)
+
+    @classmethod
+    def write_tool(cls, file_path: str, content: str) -> str:
+        with open(file_path, "w") as f:
+            f.write(content)
+        return content
 
 
 class ChoiceHandler:
