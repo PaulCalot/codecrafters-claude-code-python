@@ -1,60 +1,40 @@
 import argparse
 import json
+import logging
 import os
 import sys
-from typing import Callable
+from enum import Enum
+from typing import Any, Callable, Dict, List, Tuple
 
 from openai import OpenAI
-from openai.types.chat import ChatCompletion
+from openai.types.chat import (
+    ChatCompletionMessageFunctionToolCall,
+    ChatCompletionMessageToolCallUnion,
+)
+from openai.types.chat.chat_completion import Choice
+from pydantic import BaseModel
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 API_KEY = os.getenv("OPENROUTER_API_KEY")
 BASE_URL = os.getenv("OPENROUTER_BASE_URL", default="https://openrouter.ai/api/v1")
 
 
-class ResponseHandler:
+class ResponseType(Enum):
+    MESSAGE_ONLY = "message"
+    TOOL_USE = "tool"
+
+
+class ToolResult(BaseModel):
+    role: str = "tool"  # Make it frozen
+    tool_call_id: str
+    content: str  # answer from the tool
+
+
+class ToolHandler:
     @classmethod
-    def handle(cls, response: ChatCompletion):
-        first_msg = response.choices[0].message
-        if (first_msg.tool_calls is not None) and (len(first_msg.tool_calls) > 0):
-            first_tool = first_msg.tool_calls.pop(0)
-            name = first_tool.function.name
-            args = json.loads(first_tool.function.arguments)
-            tool_res = cls.tools_switcher(name)(**args)
-            print(tool_res)
-        else:
-            # msg by defualt
-            print(first_msg.content)
-
-    @classmethod
-    def tools_switcher(cls, name: str) -> Callable:
-        if name == "Read":
-            return cls.read_tool
-        else:
-            raise RuntimeError(f"Could not find tool {name}")
-
-    @classmethod
-    def read_tool(cls, file_path: str) -> str:
-        with open(file_path, "r") as f:
-            lines = f.readlines()
-        return "\n".join(lines)
-
-
-def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("-p", required=True)
-    args = p.parse_args()
-
-    if not API_KEY:
-        raise RuntimeError("OPENROUTER_API_KEY is not set")
-
-    client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
-    # client = OpenAI()
-
-    chat = client.chat.completions.create(
-        # model="gpt-4.1-nano",
-        model="anthropic/claude-haiku-4.5",
-        messages=[{"role": "user", "content": args.p}],
-        tools=[
+    def config(cls) -> List[Dict[str, Any]]:
+        return [
             {
                 "type": "function",
                 "function": {
@@ -72,15 +52,88 @@ def main():
                     },
                 },
             }
-        ],
-    )
+        ]
 
-    if not chat.choices or len(chat.choices) == 0:
-        raise RuntimeError("no choices in response")
+    @classmethod
+    def apply_tool(cls, name: str, args: Dict[str, Any]) -> str:
+        tool_fn = cls.tools_switcher(name)
+        res = tool_fn(**args)
+        return res
 
-    # You can use print statements as follows for debugging, they'll be visible when running tests.
-    print("Logs from your program will appear here!", file=sys.stderr)
-    ResponseHandler.handle(chat)
+    @classmethod
+    def tools_switcher(cls, name: str) -> Callable:
+        if name == "Read":
+            return cls.read_tool
+        else:
+            raise RuntimeError(f"Could not find tool {name}")
+
+    @classmethod
+    def read_tool(cls, file_path: str) -> str:
+        with open(file_path, "r") as f:
+            lines = f.readlines()
+        return "\n".join(lines)
+
+
+class ChoiceHandler:
+    @classmethod
+    def handle(cls, choice: Choice) -> Tuple[ResponseType, List[ToolResult] | str]:
+        first_msg = choice.message
+        if (first_msg.tool_calls is not None) and (len(first_msg.tool_calls) > 0):
+            tool_results = list(map(cls.call_tool, first_msg.tool_calls))
+            return ResponseType.TOOL_USE, tool_results
+        else:
+            assert first_msg.content is not None
+            return ResponseType.MESSAGE_ONLY, first_msg.content
+
+    @classmethod
+    def call_tool(cls, tool: ChatCompletionMessageToolCallUnion) -> ToolResult:
+        assert isinstance(tool, ChatCompletionMessageFunctionToolCall)
+        id = tool.id
+        args = json.loads(tool.function.arguments)
+        res = ToolHandler.apply_tool(tool.function.name, args)
+        return ToolResult(tool_call_id=id, content=res)
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("-p", required=True)
+    args = p.parse_args()
+
+    if not API_KEY:
+        raise RuntimeError("OPENROUTER_API_KEY is not set")
+
+    client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
+    # client = OpenAI()
+
+    messages = [{"role": "user", "content": args.p}]
+
+    while True:
+        chat = client.chat.completions.create(
+            # model="gpt-4.1-nano",
+            model="anthropic/claude-haiku-4.5",
+            messages=messages,
+            tools=ToolHandler.config(),
+        )
+
+        if not chat.choices or len(chat.choices) == 0:
+            raise RuntimeError("no choices in response")
+
+        first_choice = chat.choices[0]
+        messages.append(first_choice.message.to_dict())
+
+        # You can use print statements as follows for debugging, they'll be visible when running tests.
+        print("Logs from your program will appear here!", file=sys.stderr)
+        response_type, result = ChoiceHandler.handle(first_choice)
+
+        if response_type.value == ResponseType.MESSAGE_ONLY.value:
+            print(result)
+        elif response_type.value == ResponseType.TOOL_USE.value:
+            for tool_res in result:
+                assert isinstance(tool_res, ToolResult)
+                messages.append(tool_res.model_dump())
+
+        if first_choice.finish_reason == "stop":
+            exit(0)
 
 
 if __name__ == "__main__":
