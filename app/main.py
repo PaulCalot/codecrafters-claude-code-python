@@ -2,9 +2,10 @@ import argparse
 import json
 import logging
 import os
+import subprocess
 import sys
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 
 from openai import OpenAI
 from openai.types.chat import (
@@ -73,10 +74,28 @@ class ToolHandler:
                     },
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "Bash",
+                    "description": "Execute a shell command",
+                    "parameters": {
+                        "type": "object",
+                        "required": ["command"],
+                        "properties": {
+                            "command": {
+                                "type": "string",
+                                "description": "The command to execute",
+                            }
+                        },
+                    },
+                },
+            },
         ]
 
     @classmethod
     def apply_tool(cls, name: str, args: Dict[str, Any]) -> str:
+        logging.info(f"Calling tool {name} with args {args}.")
         tool_fn = cls.tools_switcher(name)
         res = tool_fn(**args)
         return res
@@ -85,8 +104,10 @@ class ToolHandler:
     def tools_switcher(cls, name: str) -> Callable:
         if name == "Read":
             return cls.read_tool
-        if name == "Write":
+        elif name == "Write":
             return cls.write_tool
+        elif name == "Bash":
+            return cls.bash_tool
         else:
             raise RuntimeError(f"Could not find tool {name}")
 
@@ -101,6 +122,14 @@ class ToolHandler:
         with open(file_path, "w") as f:
             f.write(content)
         return content
+
+    @classmethod
+    def bash_tool(cls, command: str) -> str:
+        completed = subprocess.run(command, capture_output=True, text=True, shell=True)
+        if completed.returncode == 0:  # success
+            return completed.stdout
+        else:
+            return completed.stderr
 
 
 class ChoiceHandler:
