@@ -1,4 +1,5 @@
 import argparse
+import io
 import json
 import logging
 import os
@@ -15,8 +16,12 @@ from openai.types.chat import (
 from openai.types.chat.chat_completion import Choice
 from pydantic import BaseModel
 
+sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding="latin-1")
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.ERROR)
+
 API_KEY = os.getenv("OPENROUTER_API_KEY")
 BASE_URL = os.getenv("OPENROUTER_BASE_URL", default="https://openrouter.ai/api/v1")
 
@@ -153,22 +158,23 @@ class ChoiceHandler:
 
 
 def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("-p", required=True)
-    args = p.parse_args()
+    # p = argparse.ArgumentParser()
+    # p.add_argument("-p", required=True)
+    # args = p.parse_args()
 
     if not API_KEY:
         raise RuntimeError("OPENROUTER_API_KEY is not set")
 
-    client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
-    # client = OpenAI()
+    # client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
+    client = OpenAI()
 
-    messages = [{"role": "user", "content": args.p}]
+    first_msg = input("> user: ")
+    messages = [{"role": "user", "content": first_msg}]
 
     while True:
         chat = client.chat.completions.create(
-            # model="gpt-4.1-nano",
-            model="anthropic/claude-haiku-4.5",
+            model="gpt-4.1-nano",
+            # model="anthropic/claude-haiku-4.5",
             messages=messages,
             tools=ToolHandler.config(),
         )
@@ -180,18 +186,19 @@ def main():
         messages.append(first_choice.message.to_dict())
 
         # You can use print statements as follows for debugging, they'll be visible when running tests.
-        print("Logs from your program will appear here!", file=sys.stderr)
         response_type, result = ChoiceHandler.handle(first_choice)
 
         if response_type.value == ResponseType.MESSAGE_ONLY.value:
-            print(result)
+            print(f"> agent: {result}")
+            user_answer = input("> user: ")
+            messages.append({"role": "user", "content": user_answer})
         elif response_type.value == ResponseType.TOOL_USE.value:
             for tool_res in result:
                 assert isinstance(tool_res, ToolResult)
                 messages.append(tool_res.model_dump())
 
-        if first_choice.finish_reason == "stop":
-            exit(0)
+        # if first_choice.finish_reason == "stop":
+        #     exit(0)
 
 
 if __name__ == "__main__":
